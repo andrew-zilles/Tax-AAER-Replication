@@ -36,7 +36,7 @@ conflict_prefer("lead", "dplyr")
 conflict_prefer("filter", "dplyr")
 conflict_prefer("year", "lubridate")
 conflict_prefer("month", "lubridate")
-setwd("C:/Users/andre/OneDrive - University of Oklahoma/3. Research/Firm Disclosure Under Audit Certainty/Firm-Disclosure-Under-Audit-Certainty")
+setwd("C:/Users/andre/OneDrive - University of Oklahoma/3. Research/Tax AAER Replication/Tax AAER Replication")
 #https://patorjk.com/software/taag/#p=display&f=ANSI+Compact&t=%0A&x=none&v=4&h=4&w=80&we=false
 
 
@@ -59,8 +59,8 @@ WRDS<- dbConnect(RPostgres::Postgres(),
 #█                                  aqs, rca, dltt, dlc, pifo, txfo, txdfo, datadate, xrd, ppent, txbcof, tlcf, txndba, txndbl,  
 #█                                  txtubend AS UTP, txtubtxtr AS UTP_perm, fdate, pdate, apdedate
 #█                                from comp.funda
-#█                                where ((datadate between '1997-01-01' and '2014-12-31')
-#█                                  and (fyear between '1997' and '2013')
+#█                                where ((datadate between '1995-01-01' and '2003-12-31')
+#█                                  and (fyear between '1995' and '2003')
 #█                                  and (indfmt = 'INDL')
 #█                                  and (datafmt = 'STD')
 #█                                  and (indfmt = 'INDL')
@@ -71,7 +71,7 @@ WRDS<- dbConnect(RPostgres::Postgres(),
 #█                                  and (at IS NOT NULL)
 #█                                  and (sale IS NOT NULL)
 #█                                  and (dltt IS NOT NULL)
-#█                      ) ")
+#█                                  ) ")
 #█funda <- dbFetch(comp_funda)
 #█dbClearResult(comp_funda)
 #█save(funda, file = "funda.RData")
@@ -115,17 +115,18 @@ load("funda.RData")
 
 
 
-#Get Segment data from Compustat Segments Historical
+#Get AAER data from Audit Analytics
 #█████████ Commenting out cuz a prior save will load at the bottom
-#█comp_wrds_segdtail <- dbSendQuery(WRDS,"select gvkey, sid, datadate, stype, srcdate, sales, snms
-#█                                        from compseg.wrds_segmerged
-#█                                        where ((datadate between '1997-01-01' and '2020-01-01')
-#█                                          and (srcdate = datadate)
-#█                              ) ")
-#█segdtail <- dbFetch(comp_wrds_segdtail)
-#█dbClearResult(comp_wrds_segdtail)
-#█save(segdtail, file = "segdtail.RData")
-load("segdtail.RData")
+audit_AAER <- dbSendQuery(WRDS,"select *
+                                    from audit_acct_os.feed91_aaer
+                                    where (first_release_date between '1995-01-01' and '2003-12-31') 
+                                    ")
+AAER <- dbFetch(audit_AAER)
+dbClearResult(audit_AAER)
+save(AAER, file = "AAER.RData")
+load("AAER.RData")
+write.csv(my_data, "C:/Users/YourName/Documents/output.csv", row.names = FALSE)
+
 
 # stype is the type of segment (business or geographic)
 # sales is the amount of revenue attributed to this segment
@@ -133,39 +134,48 @@ load("segdtail.RData")
 
 
 
-#Get Price data from CRSP
-#wrds_crsp_price <- dbSendQuery(WRDS,
-#                                  "select permno, cusip, date, prc
-#                            from crsp.msf
-#                            where (date between '1997-01-01' and '2020-01-01'
-#                              )
-#                            ")
-#crsp_prices <- dbFetch(wrds_crsp_price)
-#dbClearResult(wrds_crsp_price)
-# prc is the trading price at the end of the day
+audit_link <- dbSendQuery(WRDS,"select *
+                                    from audit_acct_os.f91_feed91_respondent
+                                    where cik IS NOT NULL
+                                    ")
+link <- dbFetch(audit_link)
+dbClearResult(audit_link)
+save(link, file = "link.RData")
+load("link.RData")
 
 
 
-#Get Analyst Following from IBES
-#█████████ Commenting out cuz a prior save will load at the bottom
-#█IBES_analysts <- dbSendQuery(WRDS,"select cusip, fpedats, numest, fpi, ticker, oftic, measure, medest, meanest, stdev, actual, statpers
-#█                                   from ibes.statsum_epsus
-#█                                   where (extract(YEAR FROM fpedats) >= 1997 
-#█                                        and extract(YEAR FROM fpedats) <= 2020 
-#█                                        and fpi = '1'
-#█                              ) ")
-#█analyst_following <- dbFetch(IBES_analysts)
-#█dbClearResult(IBES_analysts)
-#█save(analyst_following, file = "analyst_following.RData")
-load("analyst_following.RData")
+# Inspect the AAER table structure first
+str(AAER)
+# Most likely columns: aaer_no, release_date, summary/allegations text fields,
+#                      respondent_name, etc.
 
+str(link)  
+# Most likely: aaer_no, cik, company_name, role (respondent vs co-respondent)
 
+# Filter to fraud-related earnings overstatements
+# Adjust the column names below to match your actual schema
+AAER_filtered <- AAER %>%
+  filter(release_date >= as.Date("1996-01-01"),
+         release_date <= as.Date("2002-06-30")) %>%
+  # Look for "fraud" language - adjust field name
+  filter(grepl("fraud", summary, ignore.case = TRUE) |
+           grepl("fraud", allegations, ignore.case = TRUE)) %>%
+  # Look for overstatement language
+  filter(grepl("overstat|inflat|fictitious|false revenue|premature|nonexistent",
+               summary, ignore.case = TRUE)) %>%
+  # Deduplicate at the firm level (paper notes 88 dupes in their 228)
+  distinct()
 
-# fpedats is the weirdest way I've seen them code the date value (forecast period end date)
-# statpers IBES Statistical Period - the date the data was collected
-# numest is the number of analysts following the firm
-# fpi stands for fiscal period indicator - should be "1" for an annual forecast instead of quarterly
-
+# Link to firms via CIK
+AAER_firms <- AAER_filtered %>%
+  inner_join(link, by = "aaer_no") %>%   # whatever the join key actually is
+  filter(!is.na(cik)) %>%
+  # If a firm has multiple AAERs, collapse to one record
+  group_by(cik) %>%
+  summarise(first_aaer_date = min(release_date),
+            aaer_text_concat = paste(summary, collapse = " | "),
+            .groups = "drop")
 
 
 #####################
